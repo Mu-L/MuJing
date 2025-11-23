@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2023-2025 tang shimin
+ *
+ * This file is part of MuJing.
+ *
+ * MuJing is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * MuJing is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with MuJing. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.mujingx.data
+
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class RecentItem(val time: String, val name: String, val path: String, val index: Int = 0) {
+    override fun equals(other: Any?): Boolean {
+        val otherItem = other as RecentItem
+        return this.name == otherItem.name && this.path == otherItem.path
+    }
+
+    override fun hashCode(): Int {
+        return name.hashCode() + path.hashCode()
+    }
+}

@@ -53,7 +53,7 @@ fn zstd_decompress_internal(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_fsrs_zstd_ZstdNative_compress(
+pub extern "system" fn Java_com_mujingx_fsrs_zstd_ZstdNative_compress(
     mut env: JNIEnv,
     _this: JObject,
     input: JByteArray,
@@ -82,7 +82,7 @@ pub extern "system" fn Java_fsrs_zstd_ZstdNative_compress(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_fsrs_zstd_ZstdNative_decompress(
+pub extern "system" fn Java_com_mujingx_fsrs_zstd_ZstdNative_decompress(
     mut env: JNIEnv,
     _this: JObject,
     input: JByteArray,
@@ -110,17 +110,17 @@ pub extern "system" fn Java_fsrs_zstd_ZstdNative_decompress(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_fsrs_zstd_ZstdNative_compressStream(
+pub extern "system" fn Java_com_mujingx_fsrs_zstd_ZstdNative_compressStream(
     env: JNIEnv,
     _this: JObject,
     input: JByteArray,
     compression_level: jint,
 ) -> jbyteArray {
-    Java_fsrs_zstd_ZstdNative_compress(env, _this, input, compression_level)
+    Java_com_mujingx_fsrs_zstd_ZstdNative_compress(env, _this, input, compression_level)
 }
 
 #[no_mangle]
-pub extern "system" fn Java_fsrs_zstd_ZstdNative_getVersion(
+pub extern "system" fn Java_com_mujingx_fsrs_zstd_ZstdNative_getVersion(
     mut env: JNIEnv,
     _this: JObject,
 ) -> jstring {

@@ -128,7 +128,7 @@ val buildRustZstdJni by tasks.registering(Exec::class) {
  */
 compose.desktop {
     application {
-        mainClass = "MainKt"
+        mainClass = "com.mujingx.MainKt"
         jvmArgs += listOf(
             "-server", //server 模式
             "-XX:+UnlockExperimentalVMOptions",// 解锁实验性 JVM 选项
@@ -317,14 +317,17 @@ val testLast by tasks.registering(Test::class) {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
 
-    // 仅包含需要最后执行的测试类
-    include("**/util/TestRemoveConfigDependencies*")
-    include("**/util/TestRuntimeModules*")
+    // NOTE: 包结构已从 `util` 迁移到 `com.mujingx.util`，使用 TestFilter 按 FQN 过滤更直观且不受路径层级变化影响
+    // 仅包含需要最后执行的测试类（使用 fully-qualified name）
+    filter {
+        includeTestsMatching("com.mujingx.util.TestRemoveConfigDependencies")
+        includeTestsMatching("com.mujingx.util.TestRuntimeModules")
+    }
 
     // 使用 JUnit Platform（同时覆盖 JUnit 5 与 Vintage）
     useJUnitPlatform()
 
-    // 确保类级别顺序按 @Order 注解执行
+    // 确保类级别顺序按 @Order 注解执行 (escape $)
     systemProperty("junit.jupiter.testclass.order.default", "org.junit.jupiter.api.ClassOrderer\$OrderAnnotation")
 
     // 与默认 test 任务保持一致的日志配置

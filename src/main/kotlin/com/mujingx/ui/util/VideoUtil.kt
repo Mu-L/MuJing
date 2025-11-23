@@ -1,0 +1,862 @@
+/*
+ * Copyright (c) 2023-2025 tang shimin
+ *
+ * This file is part of MuJing.
+ *
+ * MuJing is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * MuJing is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with MuJing. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.mujingx.ui.util
+
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowState
+import com.mujingx.data.Caption
+import com.mujingx.ffmpeg.convertToSrt
+import com.mujingx.ffmpeg.findFFmpegPath
+import com.mujingx.ffmpeg.hasRichText
+import com.mujingx.ffmpeg.removeRichText
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import net.bramp.ffmpeg.FFmpeg
+import net.bramp.ffmpeg.FFmpegExecutor
+import net.bramp.ffmpeg.builder.FFmpegBuilder
+import net.bramp.ffmpeg.builder.FFmpegBuilder.Verbosity
+import net.bramp.ffmpeg.job.FFmpegJob
+import org.mozilla.universalchardet.UniversalDetector
+import com.mujingx.player.PlayerCaption
+import com.mujingx.player.convertTimeToMilliseconds
+import com.mujingx.state.getSettingsDirectory
+import subtitleFile.FormatSRT
+import subtitleFile.TimedTextObject
+import com.mujingx.ui.dialog.removeItalicSymbol
+import com.mujingx.ui.dialog.removeNewLine
+import com.mujingx.ui.dialog.replaceNewLine
+import java.awt.Dimension
+import java.awt.Point
+import java.awt.Rectangle
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
+import java.nio.charset.Charset
+import java.util.*
+import javax.swing.JOptionPane
+
+/** 计算文件的媒体类型，
+ * 如果文件不存在返回默认的媒体类型 video
+ */
+fun computeMediaType(mediaPath:String):String{
+    val file = File(mediaPath)
+    if(file.exists()){
+        val extension = file.extension
+        //  mp3、aac、wav、mp4、mkv，
+        return if(extension =="mp3"||extension =="aac"||extension =="wav"){
+            "audio"
+        }else{
+            "video"
+        }
+    }
+    return "video"
+}
+
+
+/**
+ * 计算视频播放窗口的位置和大小
+ */
+fun computeVideoBounds(
+    windowState: WindowState,
+    openSettings: Boolean,
+    density:Float,
+): Rectangle {
+    var mainX = windowState.position.x.value.toInt()
+    var mainY = windowState.position.y.value.toInt()
+    mainX = (mainX).div(density).toInt()
+    mainY = (mainY).div(density).toInt()
+
+    val mainWidth = windowState.size.width.value.toInt()
+    val mainHeight = windowState.size.height.value.toInt()
+
+    // 根据不同分辨率设置不同的窗口大小
+    val size = when {
+        mainWidth > 3840 -> { // 4K分辨率及以上
+            // 保持与原始设计相同的比例 (约93%)
+            Dimension(3570, 2010) // 约为4K宽度的93%
+        }
+        mainWidth > 2560 -> { // 2K和4K之间
+            Dimension(2380, 1340) // 约为3K宽度的93%
+        }
+        mainWidth > 1920 -> { // 2K分辨率
+            Dimension(1780, 1000) // 约为2K宽度的93%
+        }
+        mainWidth > 1080 -> { // 普通高分辨率
+            Dimension(1005, 610) // 原始尺寸
+        }
+        mainWidth in 801..1079 -> { // 中等分辨率
+            Dimension(642, 390) // 原始尺寸
+        }
+        else -> { // 低分辨率
+            Dimension(540, 304) // 原始尺寸
+        }
+    }
+
+    // 处理高DPI缩放
+//    if(density!=1f){
+//        size.width = size.width.div(density).toInt()
+//        size.height = size.height.div(density).toInt()
+//    }
+
+    // 计算窗口位置
+    // 根据分辨率调整窗口的位置偏移
+    var offsetX = 0
+    var offsetY = 0
+
+    when {
+        mainWidth > 3840 -> { // 4K分辨率及以上
+            offsetX = 0
+            offsetY = -50 // 在4K分辨率上稍微上移窗口
+        }
+        mainWidth > 2560 -> { // 2K和4K之间
+            offsetX = 0
+            offsetY = -30
+        }
+        mainWidth > 1920 -> { // 2K分辨率
+            offsetX = 0
+            offsetY = -20
+        }
+    }
+
+    // 居中计算基本位置
+    var x = (mainWidth - size.width).div(2) + offsetX
+    var y = ((mainHeight - size.height).div(2)) + offsetY
+
+    // 添加主窗口位置偏移
+    x += mainX
+    y += mainY
+
+    // 设置选项面板打开时的偏移
+    if (openSettings) {
+        // 根据分辨率调整设置面板打开时的偏移量
+        val settingsOffset = when {
+            mainWidth > 2560 -> 150 // 在高分辨率下增加偏移
+            mainWidth > 1920 -> 130
+            else -> 109 // 保持原来的偏移
+        }
+        x += settingsOffset
+    }
+
+    val point = Point(x, y)
+    return Rectangle(point, size)
+}
+
+
+/**
+ * 计算视频播放的大小
+ */
+fun computeVideoSize(
+    windowSize: DpSize,
+): DpSize {
+    val mainWidth = windowSize.width.value.toInt()
+
+    // 使用标准16:9视频比例的窗口大小设置
+    // 对于学习视频，16:9比例是当今最常见的视频格式
+    // 基础尺寸：1005.dp × 565.dp (经过 Mac 和 Windows 测试验证)
+    val size = when {
+        mainWidth > 3840 -> { // 4K分辨率及以上
+            // 按比例放大约 2.4 倍 (3840/1920 = 2, 适当增加到 2.4)
+            DpSize(2412.dp, 1356.dp) // 16:9 比例
+        }
+        mainWidth > 2560 -> { // 2K和4K之间
+            // 按比例放大约 1.6 倍 (2560/1920 ≈ 1.33, 适当增加到 1.6)
+            DpSize(1608.dp, 904.dp) // 16:9 比例
+        }
+        mainWidth > 1920 -> { // 2K分辨率
+            DpSize(1005.dp, 565.dp) // 16:9 比例，经测试验证的最佳尺寸
+        }
+        mainWidth > 1080 -> { // 普通高分辨率
+            DpSize(1005.dp, 565.dp) // 16:9 比例
+        }
+        mainWidth in 801..1079 -> { // 中等分辨率
+            DpSize(642.dp, 361.dp) // 16:9 比例
+        }
+        else -> { // 低分辨率
+            DpSize(540.dp, 304.dp) // 16:9 比例
+        }
+    }
+
+    // 在 Compose 中使用 DpSize 和 dp 单位时，不需要手动处理 density
+    // dp 单位已经会根据系统的缩放设置自动进行适配
+
+//    println("最终计算的视频窗口大小: $size")
+    return size
+}
+
+/**
+ * 解析字幕文件并设置相关状态
+ *
+ * 该函数用于解析指定路径的字幕文件（支持SRT格式），自动检测文件编码，
+ * 解析字幕内容并通过回调函数设置最大字符数和字幕列表。主要用于字幕显示界面。
+ *
+ * @param subtitlesPath 字幕文件的完整路径（支持SRT格式）
+ * @param setMaxLength 用于设置字幕最大字符数的回调函数
+ *                     - 参数: Int - 所有字幕条目中最长的字符数
+ *                     - 用途: 帮助UI组件确定合适的显示宽度
+ * @param setCaptionList 用于设置字幕列表的回调函数
+ *                       - 参数: List<Caption> - 解析后的字幕条目列表
+ *                       - 每个Caption包含开始时间、结束时间和内容
+ * @param resetSubtitlesState 重置字幕状态的回调函数
+ *                           - 当字幕文件不存在、被删除或解析失败时调用
+ *                           - 用于清理相关的UI状态
+ *
+ * 功能特性：
+ * - 自动检测文件编码（使用UniversalDetector）
+ * - 移除字幕中的位置信息标签
+ * - 移除斜体符号标记
+ * - 处理换行符（移除多余换行）
+ * - 计算字幕内容的最大字符数
+ * - 统一时间格式为 "hh:mm:ss,ms"
+ *
+ * 错误处理：
+ * - 文件不存在时显示"找不到字幕"提示并调用resetSubtitlesState
+ * - 解析失败时显示详细错误信息并调用resetSubtitlesState
+ * - 编码检测失败时使用系统默认编码
+ *
+ * @throws Exception 当文件读取或解析过程中发生错误时
+ *
+ * @see Caption 字幕条目数据类（用于显示）
+ * @see FormatSRT SRT格式解析器
+ * @see UniversalDetector 编码检测工具
+ *
+ * 示例用法：
+ * ```kotlin
+ * parseSubtitles(
+ *     subtitlesPath = "/path/to/subtitle.srt",
+ *     setMaxLength = { maxLen -> println("最大字符数: $maxLen") },
+ *     setCaptionList = { captions -> displayCaptions(captions) },
+ *     resetSubtitlesState = { clearSubtitleUI() }
+ * )
+ * ```
+ *
+ * 注意事项：
+ * - 仅支持SRT格式的字幕文件
+ * - 会自动处理各种编码格式的字幕文件
+ * - 解析失败时会弹出错误对话框提示用户
+ * - 字幕内容会被清理（移除格式标记和多余换行）
+ */
+fun parseSubtitles(
+    subtitlesPath: String,
+    setMaxLength: (Int) -> Unit,
+    setCaptionList: (List<Caption>) -> Unit,
+    resetSubtitlesState:() -> Unit,
+) {
+    val formatSRT = FormatSRT()
+    val file = File(subtitlesPath)
+    if(file.exists()){
+        try {
+            val encoding = UniversalDetector.detectCharset(file)
+            val charset =  if(encoding != null){
+                Charset.forName(encoding)
+            }else{
+                Charset.defaultCharset()
+            }
+            val inputStream: InputStream = FileInputStream(file)
+            val timedTextObject: TimedTextObject = formatSRT.parseFile(file.name, inputStream,charset)
+            val captions: TreeMap<Int, subtitleFile.Caption> = timedTextObject.captions
+            val captionList = mutableListOf<Caption>()
+            var maxLength = 0
+            for (caption in captions.values) {
+                var content = removeLocationInfo(caption.content)
+                if(hasRichText(content)){
+                    content = removeRichText(content)
+                }
+                content = removeItalicSymbol(content)
+                content = removeNewLine(content)
+
+                // 限制字幕内容的最大长度为 100，防止异常数据导致布局崩溃
+                if (content.length > 100) {
+                    content = content.take(100)
+                }
+
+                val newCaption = Caption(
+                    start = caption.start.getTime("hh:mm:ss,ms"),
+                    end = caption.end.getTime("hh:mm:ss,ms"),
+                    content = content
+                )
+                // 限制单条字幕的长度最大为 100，防止异常数据导致布局崩溃
+                val limitedLength = content.length.coerceAtMost(100)
+                if (limitedLength > maxLength) {
+                    maxLength = limitedLength
+                }
+                captionList.add(newCaption)
+            }
+
+            setMaxLength(maxLength)
+            setCaptionList(captionList)
+        } catch (exception: Exception) {
+            exception.printStackTrace()
+            resetSubtitlesState()
+            JOptionPane.showMessageDialog(
+                null, "字幕文件解析失败:\n${exception.message}"
+            )
+
+        }
+    } else {
+        JOptionPane.showMessageDialog(null, "找不到字幕")
+        resetSubtitlesState()
+    }
+
+}
+
+
+/**
+ * 使用 FFmpeg 提取视频中的字幕并返回字幕列表
+ *
+ * 该函数会从指定的视频文件中提取指定轨道的字幕，将其转换为 SRT 格式，
+ * 然后解析为 PlayerCaption 对象列表。提取过程中会在应用程序设置目录中
+ * 创建临时的 SRT 文件，处理完成后会自动删除。
+ *
+ * @param videoPath 视频文件的完整路径
+ * @param subtitleId 字幕轨道ID，从0开始计数
+ *                   - 0: 第一个字幕轨道
+ *                   - 1: 第二个字幕轨道
+ *                   - 以此类推
+ * @param verbosity FFmpeg 的详细输出级别，默认为 INFO
+ *                  可选值：QUIET, PANIC, FATAL, ERROR, WARNING, INFO, VERBOSE, DEBUG, TRACE
+ *
+ * @return List<PlayerCaption> 解析后的字幕列表
+ *         - 如果提取成功，返回包含所有字幕条目的列表
+ *         - 如果提取失败或视频中没有指定的字幕轨道，返回空列表
+ *
+ * @throws Exception 当 FFmpeg 执行失败或文件路径无效时可能抛出异常
+ *
+ * @see PlayerCaption 字幕条目数据类
+ * @see parseSubtitles 用于解析 SRT 文件的工具函数
+ *
+ * 示例用法：
+ * ```kotlin
+ * val captions = readCaptionList("/path/to/video.mp4", 0)
+ * captions.forEach { caption ->
+ *     println("${caption.start} -> ${caption.end}: ${caption.content}")
+ * }
+ * ```
+ *
+ * 注意事项：
+ * - 需要确保视频文件存在且包含字幕轨道
+ * - subtitleId 超出范围时会返回空列表
+ * - 函数会自动处理临时文件的清理
+ * - 支持大多数常见的文本字幕格式（如 ASS、SSA、VTT 等）
+ */
+fun readCaptionList(
+    videoPath: String,
+    subtitleId: Int,
+    verbosity: Verbosity = Verbosity.INFO,
+    showMessage:(String)->Unit = {}
+): List<PlayerCaption> {
+    val captionList = mutableListOf<PlayerCaption>()
+    val applicationDir = getSettingsDirectory()
+
+    // 确保 VideoPlayer 存在，如果不存在则创建
+    "$applicationDir/VideoPlayer".let { dir ->
+        File(dir).apply {
+            if (!exists()) {
+                mkdirs() // 确保目录存在
+            }
+        }
+    }
+    val subtitlePath = "$applicationDir/VideoPlayer/subtitle.srt"
+    val infoPath = "$applicationDir/VideoPlayer/last_subtitle.json"
+    try {
+        val ffmpeg = FFmpeg(findFFmpegPath())
+        val builder = FFmpegBuilder()
+            .setVerbosity(verbosity)
+            .setInput(videoPath)
+            .addOutput(subtitlePath)
+            .addExtraArgs("-map", "0:s:$subtitleId")
+            .done()
+        val executor = FFmpegExecutor(ffmpeg)
+        val job = executor.createJob(builder)
+        job.run()
+
+        if (job.state == FFmpegJob.State.FINISHED) {
+            println("extractSubtitle success")
+            captionList.addAll(parseSubtitles(subtitlePath))
+            val json = Json {
+                prettyPrint = true
+                encodeDefaults = true
+            }
+            val info = SubtitleInfo(videoPath, subtitleId)
+            val jsonString =  json.encodeToString(info)
+            // 将字幕信息写入 JSON 文件
+            File(infoPath).writeText(jsonString)
+        }
+    } catch (e: Exception) {
+
+        e.printStackTrace()
+        // BPS/PGS 等图形字幕会在这里被捕获
+        // 使用 ProcessBuilder 获取详细错误信息
+        val errorMessage = getFFmpegErrorMessage(videoPath, subtitleId, subtitlePath)
+        if (errorMessage.contains("Subtitle encoding currently only possible from text to text or bitmap to bitmap")) {
+            println("不支持图形字幕格式（BPS/PGS）")
+            showMessage("暂时不支持图形字幕格式（BPS/PGS）")
+        } else {
+            println("FFmpeg 执行异常: $errorMessage")
+            showMessage("字幕提取失败:\n$errorMessage")
+        }
+        return emptyList()
+    }
+    return captionList
+}
+
+/**
+ * 使用 ProcessBuilder 直接执行 FFmpeg 并捕获错误信息
+ * 用于检测图形字幕等无法转换的情况
+ */
+private fun getFFmpegErrorMessage(videoPath: String, subtitleId: Int, outputPath: String): String {
+    val ffmpegPath = findFFmpegPath()
+    val command = listOf(
+        ffmpegPath,
+        "-i", videoPath,
+        "-map", "0:s:$subtitleId",
+        "-c:s", "srt",
+        "-y", // 覆盖输出文件
+        outputPath
+    )
+    
+    return try {
+        val processBuilder = ProcessBuilder(command)
+        processBuilder.redirectErrorStream(false) // 分别处理 stdout 和 stderr
+        val process = processBuilder.start()
+        
+        // 读取 stderr（FFmpeg 的主要输出都在 stderr）
+        val errorOutput = process.errorStream.bufferedReader().use { it.readText() }
+        
+        // 等待进程完成
+        process.waitFor()
+        
+        errorOutput
+    } catch (e: Exception) {
+        "Error executing FFmpeg: ${e.message}"
+    }
+}
+
+/**
+ * 检测字幕轨道的类型
+ * @param videoPath 视频文件路径
+ * @param subtitleId 字幕轨道ID
+ * @return "text" 表示文本字幕，"bitmap" 表示图形字幕，"unknown" 表示无法确定
+ */
+fun detectSubtitleType(videoPath: String, subtitleId: Int): String {
+    val applicationDir = getSettingsDirectory()
+    val tempSubtitlePath = "$applicationDir/VideoPlayer/temp_subtitle_check.srt"
+    
+    try {
+        val errorMessage = getFFmpegErrorMessage(videoPath, subtitleId, tempSubtitlePath)
+        
+        return when {
+            errorMessage.contains("Subtitle encoding currently only possible from text to text or bitmap to bitmap") -> "bitmap"
+            errorMessage.contains("Error opening output file") -> "bitmap"
+            File(tempSubtitlePath).exists() && File(tempSubtitlePath).length() > 0 -> "text"
+            else -> "unknown"
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return "unknown"
+    } finally {
+        // 清理临时文件
+        File(tempSubtitlePath).delete()
+    }
+}
+
+
+@Serializable
+data class SubtitleInfo(
+    val videoPath: String,
+    val trackID: Int
+)
+
+
+@Serializable
+data class SubtitlePreference(
+    val videoPath: String,
+    val subtitleType: String, // "internal" 或 "external" 或 "disabled"
+    val trackId: Int = -1, // 内部字幕轨道ID，仅当 subtitleType 为 "internal" 时有效
+    val subtitlePath: String = "", // 外部字幕路径，仅当 subtitleType 为 "external" 时有效
+    val description: String // 字幕描述，如语言标签等
+)
+
+fun readCachedSubtitle(
+    videoPath: String,
+    trackID: Int = 0,
+): List<PlayerCaption> {
+    val applicationDir = getSettingsDirectory()
+    val infoPath = "$applicationDir/VideoPlayer/last_subtitle.json"
+    val subtitlePath = "$applicationDir/VideoPlayer/subtitle.srt"
+    val infoFile = File(infoPath)
+    if (!infoFile.exists()) return emptyList()
+    return try {
+        val jsonString = infoFile.readText()
+        val json = Json { ignoreUnknownKeys }
+        val info = json.decodeFromString<SubtitleInfo>(jsonString)
+        if (info.videoPath == videoPath && info.trackID == trackID) {
+            parseSubtitles(subtitlePath)
+        } else {
+            emptyList()
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        emptyList()
+    }
+}
+
+fun readTrackIdFromLastSubtitle(): Int? {
+    val applicationDir = getSettingsDirectory()
+    val infoPath = "$applicationDir/VideoPlayer/last_subtitle.json"
+    val infoFile = File(infoPath)
+    if (!infoFile.exists()) return null
+    return try {
+        val jsonString = infoFile.readText()
+        val info = Json.decodeFromString<SubtitleInfo>(jsonString)
+        info.trackID
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
+
+
+/**
+ * 保存字幕偏好设置
+ */
+fun saveSubtitlePreference(
+    videoPath: String,
+    subtitleType: String,
+    trackId: Int = -1,
+    subtitlePath: String = "",
+    description: String
+) {
+    val applicationDir = getSettingsDirectory()
+    val infoPath = "$applicationDir/VideoPlayer/subtitle_preference.json"
+    val json = Json {
+        prettyPrint = true
+        encodeDefaults = true
+    }
+    val preference = SubtitlePreference(videoPath, subtitleType, trackId, subtitlePath,description)
+    val jsonString = json.encodeToString(preference)
+    File(infoPath).writeText(jsonString)
+}
+
+/**
+ * 读取字幕偏好设置
+ */
+fun readSubtitlePreference(videoPath: String): SubtitlePreference? {
+    val applicationDir = getSettingsDirectory()
+    val infoPath = "$applicationDir/VideoPlayer/subtitle_preference.json"
+    val infoFile = File(infoPath)
+    if (!infoFile.exists()) return null
+    return try {
+        val jsonString = infoFile.readText()
+        val json = Json { ignoreUnknownKeys = true }
+        val preference = json.decodeFromString<SubtitlePreference>(jsonString)
+        if (preference.videoPath == videoPath) {
+            // 如果是外部字幕，检查文件是否还存在
+            if (preference.subtitleType == "external" && preference.subtitlePath.isNotEmpty()) {
+                if (File(preference.subtitlePath).exists()) {
+                    preference
+                } else {
+                    null // 外部字幕文件不存在，返回null
+                }
+            } else {
+                preference
+            }
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
+
+/**
+ * 解析字幕文件并返回PlayerCaption列表
+ *
+ * 该函数直接解析SRT格式的字幕文件，将时间转换为毫秒格式，
+ * 并返回适用于视频播放器的PlayerCaption对象列表。与上面的parseSubtitles函数不同，
+ * 这个函数不使用回调，而是直接返回解析结果。
+ *
+ * @param subtitlesPath 字幕文件的完整路径（仅支持SRT格式）
+ *
+ * @return List<PlayerCaption> 解析后的字幕列表
+ *         - 成功时：包含所有字幕条目的列表，时间以毫秒为单位
+ *         - 失败时：返回空列表
+ *         - 文件不存在时：返回空列表并显示错误提示
+ *
+ * 功能特性：
+ * - 自动检测字幕文件编码（UTF-8、GBK、Big5等）
+ * - 移除字幕中的位置信息标签（如{\an8}等）
+ * - 移除斜体标记符号
+ * - 处理换行符（替换为适合显示的格式）
+ * - 将时间格式从"hh:mm:ss,ms"转换为毫秒数值
+ * - 静默处理最大字符数计算（虽然不返回此值）
+ *
+ * 与第一个parseSubtitles函数的区别：
+ * - 返回类型：List<PlayerCaption> vs 通过回调设置
+ * - 时间格式：毫秒数值 vs 时间字符串
+ * - 换行处理：replaceNewLine vs removeNewLine
+ * - 用途：视频播放器 vs 字幕显示界面
+ *
+ * 错误处理：
+ * - 文件不存在时显示"找不到字幕"对话框
+ * - 解析异常时显示详细错误信息对话框
+ * - 编码检测失败时自动使用系统默认编码
+ * - 所有错误情况都返回空列表，不会抛出异常
+ *
+ * @see PlayerCaption 播放器字幕条目数据类（包含毫秒时间戳）
+ * @see Caption 显示用字幕条目数据类（包含时间字符串）
+ * @see convertTimeToMilliseconds 时间字符串转毫秒的工具函数
+ * @see replaceNewLine 换行符替换函数
+ *
+ * 示例用法：
+ * ```kotlin
+ * val playerCaptions = parseSubtitles("/path/to/subtitle.srt")
+ * if (playerCaptions.isNotEmpty()) {
+ *     playerCaptions.forEach { caption ->
+ *         println("${caption.start}ms - ${caption.end}ms: ${caption.content}")
+ *     }
+ * } else {
+ *     println("字幕解析失败或文件为空")
+ * }
+ * ```
+ *
+ * 注意事项：
+ * - 专为视频播放器设计，时间格式为毫秒便于同步
+ * - 仅支持SRT格式，其他格式需要先转换
+ * - 解析失败时会显示用户友好的错误对话框
+ * - 函数执行完成后会自动关闭文件流资源
+ * - 内容清理策略与显示用的parseSubtitles略有不同
+ */
+fun parseSubtitles(subtitlesPath: String):List<PlayerCaption>{
+    val formatSRT = FormatSRT()
+    val file = File(subtitlesPath)
+    val captionList = mutableListOf<PlayerCaption>()
+    if(file.exists()){
+        try {
+            val encoding = UniversalDetector.detectCharset(file)
+            val charset =  if(encoding != null){
+                Charset.forName(encoding)
+            }else{
+                Charset.defaultCharset()
+            }
+            val inputStream: InputStream = FileInputStream(file)
+            val timedTextObject: TimedTextObject = formatSRT.parseFile(file.name, inputStream,charset)
+            val captions: TreeMap<Int, subtitleFile.Caption> = timedTextObject.captions
+
+            var maxLength = 0
+            for (caption in captions.values) {
+                var content = removeLocationInfo(caption.content)
+                if(hasRichText(content)){
+                    content = removeRichText(content)
+                }
+                content = removeItalicSymbol(content)
+                content = replaceNewLine(content)
+
+                // 限制字幕内容的最大长度为 100，防止异常数据导致布局崩溃
+                if (content.length > 100) {
+                    content = content.take(100)
+                }
+
+                val newCaption = PlayerCaption(
+                    start = convertTimeToMilliseconds(caption.start.getTime("hh:mm:ss,ms")),
+                    end = convertTimeToMilliseconds(caption.end.getTime("hh:mm:ss,ms")),
+                    content = content
+                )
+                // 限制单条字幕的长度最大为 100，防止异常数据导致布局崩溃（虽然这里不返回 maxLength）
+                val limitedLength = content.length.coerceAtMost(100)
+                if (limitedLength > maxLength) {
+                    maxLength = limitedLength
+                }
+                captionList.add(newCaption)
+            }
+
+        }catch (exception: Exception){
+            exception.printStackTrace()
+            JOptionPane.showMessageDialog(null, "字幕文件解析失败:\n${exception.message}")
+        }
+
+    }else{
+        JOptionPane.showMessageDialog(null, "找不到字幕")
+    }
+    return captionList
+}
+
+/**
+ * 处理 ASS 字幕文件转换和加载
+ */
+ fun loadAndConvertAssSubtitle(
+    file: File,
+    onSuccess: (List<PlayerCaption>) -> Unit,
+    onFailure: (String) -> Unit
+) {
+    val applicationDir = getSettingsDirectory()
+    val srtFile = File("$applicationDir/temp.srt")
+    val result = convertToSrt(file.absolutePath, srtFile.absolutePath)
+    if (result == "finished") {
+        println("字幕转换成功")
+        val captions = parseSubtitles(srtFile.absolutePath)
+        onSuccess(captions)
+    } else {
+        onFailure("字幕转换失败")
+    }
+    srtFile.delete()
+}
+
+/**
+ * 自动查找与视频文件关联的字幕文件
+ *
+ * 该函数会在视频文件所在目录及其下的 Subs 文件夹中查找所有 .srt 和 .ass 字幕文件，
+ * 并自动提取每个字幕文件的语言标签。语言标签的提取规则见 getSubtitleLangLabel。
+ *
+ * 查找逻辑：
+ * 1. 查找与视频同目录下、以 baseName 开头的 .srt、.ass文件，提取语言标签。
+ * 2. 查找同目录下名为 Subs（不区分大小写）的子文件夹中的所有 .srt 和 .ass 文件，提取语言标签。
+ *
+ * @param videoPath 视频文件的完整路径
+ * @return List<Pair<String, File>> 返回 (语言标签, 字幕文件) 的列表
+ *
+ * @see getSubtitleLangLabel 用于提取语言标签的工具函数
+ */
+fun findSubtitleFiles(videoPath: String): List<Pair<String,File>> {
+    val videoFile = File(videoPath)
+    val baseName = videoFile.nameWithoutExtension
+    val dir = videoFile.parentFile ?: return emptyList()
+    val result = mutableListOf<Pair<String,File>>()
+
+    // 1. 查找同目录下的 .srt 和 .ass 字幕
+    dir.listFiles { file ->
+        file.isFile &&
+                file.name.startsWith(baseName) &&
+                (file.name.endsWith(".srt", ignoreCase = true) || file.name.endsWith(".ass", ignoreCase = true))
+    }?.forEach { file ->
+
+        val name = file.name
+        var lang = name.removePrefix(baseName)
+        if (lang.startsWith("_")) lang = lang.removePrefix("_")
+        if (lang.startsWith(".")) lang = lang.removePrefix(".")
+        if (lang.isBlank()) lang = "subtitle"
+        result.add(lang to file)
+    }
+
+    // 2. 查找 Subs 子文件夹下的 .srt 和 .ass 字幕
+    // 查找同目录下所有名为 Subs/ subs/ SUBS 等的文件夹
+    val subsDirs = dir.listFiles { file ->
+        file.isDirectory && file.name.equals("Subs", ignoreCase = true)
+    } ?: emptyArray()
+
+    for (subsDir in subsDirs) {
+        subsDir.listFiles { file ->
+            file.isFile && (file.name.endsWith(".srt", ignoreCase = true) || file.name.endsWith(".ass", ignoreCase = true))
+        }?.forEach { file ->
+
+            val name = file.name
+            if(name.startsWith(baseName)){
+                var lang = name.removePrefix(baseName)
+                if (lang.startsWith("_")) lang = lang.removePrefix("_")
+                if (lang.startsWith(".")) lang = lang.removePrefix(".")
+                if (lang.isBlank()) lang = "subtitle"
+                result.add(lang to file)
+            } else {
+                var lang = name
+                if (lang.startsWith("_")) lang = lang.removePrefix("_")
+                if (lang.startsWith(".")) lang = lang.removePrefix(".")
+                result.add(lang to file)
+            }
+
+        }
+    }
+
+    return result.sortedBy { it.first }
+
+}
+
+/**
+ * 提取字幕文件的语言标签
+ *
+ * 根据字幕文件名和视频基础名，自动提取语言标签部分。
+ * - 如果文件名以 baseName 开头，则去除 baseName 和前缀的下划线/点，空则返回 "subtitle"
+ * - 如果文件名不以 baseName 开头，则直接去除前缀下划线
+ *
+ * 适用于自动识别同目录或 Subs 文件夹下的字幕文件语言标识。
+ *
+ * @param baseName 视频文件的基础名（不含扩展名）
+ * @param fileName 字幕文件名（含扩展名）
+ * @return 提取出的语言标签字符串
+ */
+fun getSubtitleLangLabel(baseName: String, fileName: String): String {
+    val nameWithoutExt = fileName.removeSuffix(".srt")
+    val lang = if (nameWithoutExt.startsWith(baseName)) {
+        var l = nameWithoutExt.removePrefix(baseName)
+        if (l.startsWith("_")) l = l.removePrefix("_")
+        if (l.startsWith(".")) l = l.removePrefix(".")
+        if (l.isBlank()) l = "subtitle"
+        l
+    } else {
+        var l = nameWithoutExt
+        if (l.startsWith("_")) l = l.removePrefix("_")
+        l
+    }
+    return lang
+}
+
+/**
+ * 根据描述字符串返回对应的语言标签
+ *
+ * 该函数会根据输入的描述字符串，匹配常见的语言关键词，
+ * 并返回对应的标准语言标签。支持简体中文、繁体中文、
+ * 英语、日语、韩语、法语、德语、西班牙语和俄语。
+ *
+ * 匹配规则（不区分大小写）：
+ * - 包含 "简体"、"chinese"、"simplified" 或 "zh" -> "简体中文"
+ * - 包含 "繁体"、"traditional" 或 "tw" -> "繁體中文"
+ * - 包含 "english"、"eng" 或 "en" -> "English"
+ * - 包含 "japanese"、"jp" 或 "ja" -> "日本語"
+ * - 包含 "korean"、"kr" 或 "ko" -> "한국어"
+ * - 包含 "french" 或 "fr" -> "Français"
+ * - 包含 "german" 或 "de" -> "Deutsch"
+ * - 包含 "spanish" 或 "es" -> "Español"
+ * - 包含 "russian" 或 "ru" -> "Русский"
+ * - 其他情况返回原始描述字符串
+ *
+ * @param description 字幕文件名或语言描述字符串
+ * @return 对应的标准语言标签，如果无法识别则返回原始描述
+ *
+ * 示例用法：
+ * ```kotlin
+ * val label1 = getLanguageLabel("movie.zh.srt") // 返回 "简体中文"
+ * val label2 = getLanguageLabel("anime.traditional") // 返回 "繁體中文"
+ * */
+fun getLanguageLabel(description: String): String {
+    val lowerDesc = description.lowercase()
+    return when {
+        lowerDesc.contains("简体") || lowerDesc.contains("chinese") || lowerDesc.contains("simplified") || lowerDesc.contains("zh") -> "简体中文"
+        lowerDesc.contains("繁体") || lowerDesc.contains("traditional") || lowerDesc.contains("tw") -> "繁體中文"
+        lowerDesc.contains("english") || lowerDesc.contains("eng") || lowerDesc.contains("en") -> "English"
+        lowerDesc.contains("japanese") || lowerDesc.contains("jp") || lowerDesc.contains("ja") -> "日本語"
+        lowerDesc.contains("korean") || lowerDesc.contains("kr") || lowerDesc.contains("ko") -> "한국어"
+        lowerDesc.contains("french") || lowerDesc.contains("fr") -> "Français"
+        lowerDesc.contains("german") || lowerDesc.contains("de") -> "Deutsch"
+        lowerDesc.contains("spanish") || lowerDesc.contains("es") -> "Español"
+        lowerDesc.contains("russian") || lowerDesc.contains("ru") -> "Русский"
+        else -> description // 如果无法识别，则返回原始描述
+    }
+}
