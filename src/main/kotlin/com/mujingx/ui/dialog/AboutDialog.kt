@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
@@ -124,15 +125,20 @@ fun AboutDialog(
                             }
 
                             Row(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)){
-                                Text("GitHub 地址：     ")
+                                Text("官方网站：",
+                                    textAlign = TextAlign.Left,
+                                    modifier = Modifier.width(90.dp)
+                                )
                                 LinkText(
-                                    text = "https://github.com/tangshimin/MuJing",
-                                    url =  "https://github.com/tangshimin/MuJing"
+                                    text = "https://mujingx.com",
+                                    url =  "https://mujingx.com"
                                 )
                             }
 
                             Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)){
-                                Text("邮箱：                ",modifier = Modifier.padding(end = 1.dp))
+                                Text("邮箱：",
+                                    textAlign = TextAlign.Left,
+                                    modifier = Modifier.width(90.dp))
                                 LinkText(
                                     text = "tang_shimin@qq.com",
                                     url = "mailto:tang_shimin@qq.com"
